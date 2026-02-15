@@ -1,0 +1,14 @@
+MicStream Receiver
+Copyright (c) 2026 Karthik
+
+This project is licensed under GPL-3.0.
+
+This software includes:
+- NAudio (MIT License)
+- Zeroconf (Apache License 2.0)
+- VB-Cable virtual audio driver (Donation-ware by VB-Audio Software)
+
+VB-Cable Attribution:
+VB-Cable is developed by VB-Audio Software
+Website: https://vb-audio.com/Cable/
+License: Free for personal use (donation-ware)
