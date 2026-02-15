@@ -6,9 +6,9 @@ using MicStreamReceiver.Models;
 namespace MicStreamReceiver
 {
     /// <summary>
-    /// MicStream Receiver - Phase 2
-    /// Receives UDP audio packets and plays through speakers/VB-Cable
-    /// Includes mDNS service discovery for auto-connection
+    /// MicStream Receiver - Phase 3
+    /// Receives UDP audio packets (PCM or Opus) and plays through speakers/VB-Cable
+    /// Includes Opus decoder with Packet Loss Concealment (PLC)
     /// </summary>
     class Program
     {
@@ -16,17 +16,24 @@ namespace MicStreamReceiver
         private static AudioPlayback? _audioPlayback;
         private static VirtualDeviceManager? _deviceManager;
         private static DiscoveryService? _discoveryService;
+        private static OpusDecoderService? _opusDecoder;
         private static bool _isRunning = false;
 
         // Statistics
         private static int _totalPacketsReceived = 0;
+        private static int _opusPacketsDecoded = 0;
+        private static int _pcmPacketsReceived = 0;
         private static DateTime _startTime;
+
+        // Packet loss tracking for PLC
+        private static uint _lastSequenceNumber = 0;
+        private static bool _isFirstPacket = true;
 
         static void Main(string[] args)
         {
             Console.WriteLine("╔═══════════════════════════════════════════════════════╗");
-            Console.WriteLine("║        MicStream Receiver - Phase 2                   ║");
-            Console.WriteLine("║        Low-Latency Audio Streaming + mDNS Discovery   ║");
+            Console.WriteLine("║        MicStream Receiver - Phase 3                   ║");
+            Console.WriteLine("║        Opus Codec + PLC + mDNS Discovery              ║");
             Console.WriteLine("╚═══════════════════════════════════════════════════════╝");
             Console.WriteLine();
 
@@ -84,6 +91,13 @@ namespace MicStreamReceiver
             // Initialize audio playback
             _audioPlayback = new AudioPlayback(deviceNumber);
 
+            // Initialize Opus decoder (Phase 3)
+            _opusDecoder = new OpusDecoderService(48000, 1);
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✓ Opus decoder initialized (48kHz, mono)");
+            Console.ResetColor();
+            Console.WriteLine();
+
             // Show menu
             ShowMenu();
 
@@ -134,6 +148,7 @@ namespace MicStreamReceiver
             StopStreaming();
             _discoveryService?.StopAdvertising();
             _discoveryService?.Dispose();
+            _opusDecoder?.Dispose();
             Console.WriteLine("\nShutting down...");
         }
 
@@ -159,6 +174,9 @@ namespace MicStreamReceiver
                 _isRunning = true;
                 _startTime = DateTime.Now;
                 _totalPacketsReceived = 0;
+                _opusPacketsDecoded = 0;
+                _pcmPacketsReceived = 0;
+                _isFirstPacket = true;
 
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("✓ Streaming started successfully!");
@@ -206,8 +224,74 @@ namespace MicStreamReceiver
         {
             try
             {
+                // Handle packet loss with PLC (Packet Loss Concealment)
+                if (!_isFirstPacket)
+                {
+                    uint expectedSeq = _lastSequenceNumber + 1;
+                    if (packet.SequenceNumber != expectedSeq)
+                    {
+                        uint gap = packet.SequenceNumber - expectedSeq;
+
+                        // Handle wraparound
+                        if (gap > 0x80000000)
+                        {
+                            gap = (uint.MaxValue - expectedSeq) + packet.SequenceNumber + 1;
+                        }
+
+                        // Generate PLC frames for missing packets (up to 10 to avoid flood)
+                        if (gap > 0 && gap <= 10 && packet.IsOpusEncoded)
+                        {
+                            for (int i = 0; i < gap; i++)
+                            {
+                                byte[] plcData = _opusDecoder!.GeneratePlc();
+                                _audioPlayback?.AddAudioData(plcData);
+                            }
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"[PLC] Generated {gap} frame(s) for packet loss");
+                            Console.ResetColor();
+                        }
+                    }
+                }
+
+                _lastSequenceNumber = packet.SequenceNumber;
+                _isFirstPacket = false;
+
+                // Process packet based on format
+                byte[] pcmData;
+
+                if (packet.IsOpusEncoded)
+                {
+                    // Phase 3: Opus packet - decode to PCM
+                    pcmData = _opusDecoder!.Decode(packet.AudioData);
+                    _opusPacketsDecoded++;
+
+                    // Show latency for first Opus packet
+                    if (_opusPacketsDecoded == 1)
+                    {
+                        long latency = packet.CalculateLatency();
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine($"[OPUS] First packet decoded! Latency: {latency}ms");
+                        Console.WriteLine($"[OPUS] Noise suppression: {(packet.HasNoiseSuppression ? "ON" : "OFF")}");
+                        Console.ResetColor();
+                    }
+                }
+                else
+                {
+                    // Phase 1: Raw PCM packet
+                    pcmData = packet.AudioData;
+                    _pcmPacketsReceived++;
+
+                    // Show info for first PCM packet
+                    if (_pcmPacketsReceived == 1)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine($"[PCM] Receiving raw PCM audio (Phase 1 format)");
+                        Console.ResetColor();
+                    }
+                }
+
                 // Add audio data to playback buffer
-                _audioPlayback?.AddAudioData(packet.PcmData);
+                _audioPlayback?.AddAudioData(pcmData);
 
                 _totalPacketsReceived++;
 
@@ -218,10 +302,14 @@ namespace MicStreamReceiver
                     var packetsPerSecond = _totalPacketsReceived / uptime.TotalSeconds;
                     var lossRate = _udpListener?.PacketLossRate ?? 0;
                     var bufferStatus = _audioPlayback?.GetBufferStatus() ?? "N/A";
+                    var latency = packet.IsOpusEncoded ? packet.CalculateLatency() : 0;
+                    var format = packet.IsOpusEncoded ? "Opus" : "PCM";
 
                     Console.WriteLine($"[STATS] Packets: {_totalPacketsReceived} | " +
+                                    $"Format: {format} | " +
                                     $"Rate: {packetsPerSecond:F1}/s | " +
                                     $"Loss: {lossRate:P1} | " +
+                                    (latency > 0 ? $"Latency: {latency}ms | " : "") +
                                     $"{bufferStatus}");
                 }
             }
@@ -265,12 +353,16 @@ namespace MicStreamReceiver
             var isConnected = _udpListener?.IsConnected() ?? false;
             var bufferStatus = _audioPlayback?.GetBufferStatus() ?? "N/A";
             var isPlaying = _audioPlayback?.IsPlaying ?? false;
+            var opusStats = _opusDecoder?.GetStatistics() ?? "N/A";
 
             Console.WriteLine($"  Uptime:           {uptime:hh\\:mm\\:ss}");
             Console.WriteLine($"  Connection:       {(isConnected ? "CONNECTED" : "DISCONNECTED")}");
             Console.WriteLine($"  Packets Received: {packetsReceived}");
+            Console.WriteLine($"  Opus Packets:     {_opusPacketsDecoded}");
+            Console.WriteLine($"  PCM Packets:      {_pcmPacketsReceived}");
             Console.WriteLine($"  Packets Lost:     {packetsLost}");
             Console.WriteLine($"  Loss Rate:        {lossRate:P2}");
+            Console.WriteLine($"  Opus Decoder:     {opusStats}");
             Console.WriteLine($"  Playback Status:  {(isPlaying ? "PLAYING" : "STOPPED")}");
             Console.WriteLine($"  {bufferStatus}");
             Console.WriteLine();
