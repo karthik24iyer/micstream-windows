@@ -33,15 +33,12 @@ namespace MicStreamReceiver.Models
                 throw new ArgumentException("Packet too small - must be at least 4 bytes");
             }
 
-            // Check if this is Phase 3 format (has timestamp + flags header = 9 bytes minimum)
             if (data.Length >= 9 && IsLikelyPhase3Format(data))
             {
                 return ParsePhase3(data);
             }
-            else
-            {
-                return ParsePhase1(data);
-            }
+
+            return ParsePhase1(data);
         }
 
         /// <summary>
@@ -109,21 +106,28 @@ namespace MicStreamReceiver.Models
 
         /// <summary>
         /// Calculate latency in milliseconds
+        /// NOTE: Timestamp is 32-bit (truncated), so we only get the lower 32 bits
         /// </summary>
         public long CalculateLatency()
         {
             if (Timestamp == 0) return 0;
 
+            // Get current time (full 64-bit)
             long currentTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long sendTime = Timestamp;
 
-            // Handle timestamp wraparound
-            if (currentTime - sendTime > int.MaxValue)
+            // Get lower 32 bits of current time
+            uint currentTimeLower = (uint)(currentTime & 0xFFFFFFFF);
+
+            // Calculate difference (handles wraparound automatically with uint arithmetic)
+            uint diff = currentTimeLower - Timestamp;
+
+            // If difference is too large, it wrapped around
+            if (diff > 0x80000000) // > 2^31 (more than ~24 days)
             {
-                sendTime += (1L << 32);
+                return 0; // Invalid, return 0
             }
 
-            return currentTime - sendTime;
+            return diff;
         }
     }
 }

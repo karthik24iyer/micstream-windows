@@ -1,11 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading.Tasks;
-using Zeroconf;
+using Makaretu.Dns;
 
 namespace MicStreamReceiver.Services
 {
@@ -15,52 +14,88 @@ namespace MicStreamReceiver.Services
     /// </summary>
     public class DiscoveryService : IDisposable
     {
-        private const string SERVICE_TYPE = "_micstream._udp";
-        private const string PROTOCOL = "local";
-        private const string VERSION = "1.0";
+        private const string ServiceType = "_micstream._udp";
+        private const string Version = "1.0";
 
         private readonly int _port;
         private readonly string _instanceName;
+        private MulticastService? _mdns;
+        private ServiceDiscovery? _sd;
         private bool _isAdvertising = false;
 
-        // Events
         public event EventHandler<string>? StatusChanged;
 
-        /// <summary>
-        /// Constructor
-        /// </summary>
-        /// <param name="port">Port number to advertise (default: 5005)</param>
-        /// <param name="instanceName">Instance name (default: PC hostname)</param>
         public DiscoveryService(int port = 5005, string? instanceName = null)
         {
             _port = port;
             _instanceName = instanceName ?? Environment.MachineName;
         }
 
-        /// <summary>
-        /// Get local IP addresses (IPv4 only, excluding loopback)
-        /// </summary>
+        public async Task StartAdvertising()
+        {
+            if (_isAdvertising) return;
+
+            var ipAddresses = GetLocalIPAddresses();
+            OnStatusChanged($"Starting mDNS advertisement on {ipAddresses.Count} interface(s)");
+
+            // Build service profile
+            var profile = new ServiceProfile(_instanceName, ServiceType, (ushort)_port);
+            profile.AddProperty("version", Version);
+            profile.AddProperty("name", _instanceName);
+            profile.AddProperty("capabilities", "opus,rnnoise");
+
+            OnStatusChanged("mDNS Service Configuration:");
+            OnStatusChanged($"  Service Type: {ServiceType}.local");
+            OnStatusChanged($"  Instance Name: {_instanceName}");
+            OnStatusChanged($"  Port: {_port}");
+            OnStatusChanged($"  IP Addresses: {string.Join(", ", ipAddresses)}");
+            OnStatusChanged("  TXT Records:");
+            OnStatusChanged($"    version={Version}");
+            OnStatusChanged($"    name={_instanceName}");
+            OnStatusChanged("    capabilities=opus,rnnoise");
+
+            // Start real mDNS responder
+            _mdns = new MulticastService();
+            _sd = new ServiceDiscovery(_mdns);
+            _sd.Advertise(profile);
+            _mdns.Start();
+
+            _isAdvertising = true;
+            OnStatusChanged($"√ Advertising as: {_instanceName}");
+            OnStatusChanged("  Android devices can discover this PC via mDNS");
+
+            await Task.CompletedTask;
+        }
+
+        public void StopAdvertising()
+        {
+            if (!_isAdvertising) return;
+
+            _mdns?.Stop();
+            _sd?.Dispose();
+            _mdns?.Dispose();
+            _sd = null;
+            _mdns = null;
+
+            _isAdvertising = false;
+            OnStatusChanged("Stopped mDNS advertisement");
+        }
+
         private List<string> GetLocalIPAddresses()
         {
             var ipAddresses = new List<string>();
-
             try
             {
-                var networkInterfaces = NetworkInterface.GetAllNetworkInterfaces()
+                var interfaces = NetworkInterface.GetAllNetworkInterfaces()
                     .Where(ni => ni.OperationalStatus == OperationalStatus.Up &&
-                                ni.NetworkInterfaceType != NetworkInterfaceType.Loopback);
+                                 ni.NetworkInterfaceType != NetworkInterfaceType.Loopback);
 
-                foreach (var networkInterface in networkInterfaces)
+                foreach (var ni in interfaces)
                 {
-                    var ipProperties = networkInterface.GetIPProperties();
-
-                    foreach (var unicastAddress in ipProperties.UnicastAddresses)
+                    foreach (var addr in ni.GetIPProperties().UnicastAddresses)
                     {
-                        // Only IPv4 addresses
-                        if (unicastAddress.Address.AddressFamily == AddressFamily.InterNetwork)
-                        {
-                            ipAddresses.Add(unicastAddress.Address.ToString());
-                        }
+                        if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                            ipAddresses.Add(addr.Address.ToString());
                     }
                 }
             }
@@ -68,172 +103,26 @@ namespace MicStreamReceiver.Services
             {
                 OnStatusChanged($"Error getting IP addresses: {ex.Message}");
             }
-
             return ipAddresses;
         }
 
-        /// <summary>
-        /// Start advertising the service via mDNS
-        /// </summary>
-        public async Task StartAdvertising()
-        {
-            if (_isAdvertising)
-            {
-                OnStatusChanged("Already advertising");
-                return;
-            }
-
-            try
-            {
-                var ipAddresses = GetLocalIPAddresses();
-
-                if (ipAddresses.Count == 0)
-                {
-                    OnStatusChanged("Warning: No network interfaces found");
-                    return;
-                }
-
-                OnStatusChanged($"Starting mDNS advertisement on {ipAddresses.Count} interface(s)");
-
-                // Note: Zeroconf library doesn't directly support advertising/responding on Linux
-                // This is a limitation of the library - full mDNS responder functionality
-                // requires platform-specific implementations or running an mDNS daemon
-
-#if WINDOWS
-                // On Windows, we would use Zeroconf or Makaretu.Dns for full mDNS responder
-                // For now, we'll log the service details that should be advertised
-                OnStatusChanged($"mDNS Service Configuration:");
-                OnStatusChanged($"  Service Type: {SERVICE_TYPE}.{PROTOCOL}");
-                OnStatusChanged($"  Instance Name: {_instanceName}");
-                OnStatusChanged($"  Port: {_port}");
-                OnStatusChanged($"  IP Addresses: {string.Join(", ", ipAddresses)}");
-                OnStatusChanged($"  TXT Records:");
-                OnStatusChanged($"    version={VERSION}");
-                OnStatusChanged($"    name={_instanceName}");
-                OnStatusChanged($"    capabilities=opus,rnnoise");
-
-                _isAdvertising = true;
-                OnStatusChanged($"✓ Advertising as: {_instanceName}");
-                OnStatusChanged($"  Android devices can discover this PC via mDNS");
-#else
-                // On non-Windows platforms, show configuration but note limitation
-                OnStatusChanged($"[INFO] mDNS Configuration (advertising not available on this platform):");
-                OnStatusChanged($"  Service: {_instanceName}.{SERVICE_TYPE}.{PROTOCOL}");
-                OnStatusChanged($"  Port: {_port}");
-                OnStatusChanged($"  IPs: {string.Join(", ", ipAddresses)}");
-                OnStatusChanged($"  TXT: version={VERSION}, name={_instanceName}, capabilities=opus,rnnoise");
-                OnStatusChanged($"");
-                OnStatusChanged($"[NOTE] Full mDNS responder requires Windows or external mDNS daemon");
-                OnStatusChanged($"       For testing, manually connect using IP: {ipAddresses.FirstOrDefault()}");
-
-                _isAdvertising = true;
-#endif
-            }
-            catch (Exception ex)
-            {
-                OnStatusChanged($"Error starting advertisement: {ex.Message}");
-                throw;
-            }
-
-            await Task.CompletedTask;
-        }
-
-        /// <summary>
-        /// Stop advertising the service
-        /// </summary>
-        public void StopAdvertising()
-        {
-            if (!_isAdvertising)
-            {
-                return;
-            }
-
-            try
-            {
-                _isAdvertising = false;
-                OnStatusChanged("Stopped mDNS advertisement");
-            }
-            catch (Exception ex)
-            {
-                OnStatusChanged($"Error stopping advertisement: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Get current advertising status
-        /// </summary>
         public bool IsAdvertising => _isAdvertising;
-
-        /// <summary>
-        /// Get the advertised instance name
-        /// </summary>
         public string InstanceName => _instanceName;
-
-        /// <summary>
-        /// Get service type
-        /// </summary>
-        public string ServiceType => $"{SERVICE_TYPE}.{PROTOCOL}";
-
-        /// <summary>
-        /// Get the port being advertised
-        /// </summary>
+        public string ServiceType_ => $"{ServiceType}.local";
         public int Port => _port;
+        public List<string> GetIPAddresses() => GetLocalIPAddresses();
 
-        /// <summary>
-        /// Get current IP addresses
-        /// </summary>
-        public List<string> GetIPAddresses()
-        {
-            return GetLocalIPAddresses();
-        }
-
-        /// <summary>
-        /// Print discovery information
-        /// </summary>
         public void PrintDiscoveryInfo()
         {
             Console.WriteLine("\n=== mDNS Service Discovery ===");
             Console.WriteLine($"  Instance Name: {_instanceName}");
-            Console.WriteLine($"  Service Type:  {SERVICE_TYPE}.{PROTOCOL}");
+            Console.WriteLine($"  Service Type:  {ServiceType}.local");
             Console.WriteLine($"  Port:          {_port}");
             Console.WriteLine($"  Status:        {(_isAdvertising ? "Advertising" : "Not Advertising")}");
-            Console.WriteLine();
 
-            var ipAddresses = GetLocalIPAddresses();
-            if (ipAddresses.Count > 0)
-            {
-                Console.WriteLine($"  Local IP Addresses:");
-                foreach (var ip in ipAddresses)
-                {
-                    Console.WriteLine($"    - {ip}");
-                }
-            }
-            else
-            {
-                Console.WriteLine($"  ⚠ No network interfaces found");
-            }
-
-            Console.WriteLine();
-            Console.WriteLine($"  TXT Records:");
-            Console.WriteLine($"    - version:      {VERSION}");
-            Console.WriteLine($"    - name:         {_instanceName}");
-            Console.WriteLine($"    - capabilities: opus,rnnoise");
-            Console.WriteLine();
-
-            if (_isAdvertising)
-            {
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"  ✓ Android devices can discover this PC as:");
-                Console.WriteLine($"    {_instanceName}");
-                Console.ResetColor();
-            }
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  ⚠ Not currently advertising");
-                Console.WriteLine($"    Start listening to begin advertisement");
-                Console.ResetColor();
-            }
+            var ips = GetLocalIPAddresses();
+            foreach (var ip in ips)
+                Console.WriteLine($"  IP: {ip}");
 
             Console.WriteLine();
         }

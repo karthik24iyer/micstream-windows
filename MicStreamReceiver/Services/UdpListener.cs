@@ -55,7 +55,7 @@ namespace MicStreamReceiver.Services
                 {
                     Client =
                     {
-                        ReceiveBufferSize = 65536 // 64KB buffer
+                        ReceiveBufferSize = 1048576 // 1MB buffer (increased from 64KB to handle burst traffic)
                     }
                 };
 

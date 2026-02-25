@@ -44,7 +44,7 @@ Creates a **single installer** that:
 
 2. **Build MicStream executable:**
    ```bash
-   cd ~/Documents/Projects/micstream-windows
+   cd /media/karthik/Misc/Projects/micstream-windows
    ./build-windows-exe.sh
    ```
 

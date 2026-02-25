@@ -1,5 +1,7 @@
 using System;
+using Concentus;
 using Concentus.Structs;
+using Concentus.Enums;
 
 namespace MicStreamReceiver.Services
 {
@@ -9,8 +11,7 @@ namespace MicStreamReceiver.Services
     /// </summary>
     public class OpusDecoderService : IDisposable
     {
-        private readonly OpusDecoder _decoder;
-        private readonly int _sampleRate;
+        private readonly IOpusDecoder _decoder;
         private readonly int _channels;
         private readonly int _frameSize;
 
@@ -28,12 +29,9 @@ namespace MicStreamReceiver.Services
         /// <param name="channels">Number of channels (default: 1 = Mono)</param>
         public OpusDecoderService(int sampleRate = 48000, int channels = 1)
         {
-            _sampleRate = sampleRate;
             _channels = channels;
             _frameSize = (sampleRate / 1000) * 20; // 20ms frame = 960 samples at 48kHz
-
-            // Initialize Opus decoder
-            _decoder = new OpusDecoder(sampleRate, channels);
+            _decoder = OpusCodecFactory.CreateDecoder(sampleRate, channels);
         }
 
         /// <summary>
@@ -53,14 +51,13 @@ namespace MicStreamReceiver.Services
                 // Allocate buffer for decoded PCM (16-bit samples)
                 short[] pcmSamples = new short[_frameSize * _channels];
 
-                // Decode Opus to PCM
+                // Decode Opus to PCM using modern Span-based API
+                // decodeFEC = false because Android is NOT sending FEC data
                 int decodedSamples = _decoder.Decode(
-                    opusData,
-                    0,
-                    opusData.Length,
-                    pcmSamples,
-                    0,
-                    _frameSize
+                    opusData.AsSpan(),
+                    pcmSamples.AsSpan(),
+                    _frameSize,
+                    false  // No FEC in packets, keep false
                 );
 
                 if (decodedSamples <= 0)
@@ -91,15 +88,12 @@ namespace MicStreamReceiver.Services
                 short[] pcmSamples = new short[_frameSize * _channels];
 
                 // Opus decoder can generate replacement audio for missing packets
-                // Pass null/empty data to trigger PLC
+                // Pass empty span to trigger PLC
                 int generatedSamples = _decoder.Decode(
-                    null,
-                    0,
-                    0,
-                    pcmSamples,
-                    0,
+                    Span<byte>.Empty,
+                    pcmSamples.AsSpan(),
                     _frameSize,
-                    false // decodeFec = false for PLC
+                    false
                 );
 
                 if (generatedSamples <= 0)

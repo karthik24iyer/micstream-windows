@@ -33,13 +33,13 @@ Since VB-Cable is third-party software, you need to download it:
 
 **Copy it here:**
 ```
-~/Documents/Projects/micstream-windows/installer/vbcable/VBCABLE_Setup_x64.exe
+/media/karthik/Misc/Projects/micstream-windows/installer/vbcable/VBCABLE_Setup_x64.exe
 ```
 
 ### **2. Run Build Script**
 
 ```bash
-cd ~/Documents/Projects/micstream-windows
+cd /media/karthik/Misc/Projects/micstream-windows
 ./build-installer.sh
 ```
 
