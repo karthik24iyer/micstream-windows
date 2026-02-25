@@ -104,7 +104,7 @@ namespace MicStreamReceiver
             _jitterBuffer.PacketsMissing += OnJitterPacketsMissing;
             _jitterBuffer.StatusChanged += OnJitterStatusChanged;
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("✓ Jitter buffer initialized (adaptive 40-80ms)");
+            Console.WriteLine("✓ Reorder buffer initialized (60ms gap timeout, no timer)");
             Console.ResetColor();
             Console.WriteLine();
 
@@ -392,7 +392,7 @@ namespace MicStreamReceiver
             Console.WriteLine($"  Playback Status:  {(isPlaying ? "PLAYING" : "STOPPED")}");
             Console.WriteLine($"  {bufferStatus}");
             Console.WriteLine($"  {jitterStatus}");
-            Console.WriteLine($"  Jitter Target:    {_jitterBuffer?.TargetBufferMs ?? 0}ms");
+            Console.WriteLine($"  Gap Timeout:      {_jitterBuffer?.TargetBufferMs ?? 0}ms");
             Console.WriteLine();
         }
 

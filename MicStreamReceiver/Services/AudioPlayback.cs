@@ -9,10 +9,18 @@ namespace MicStreamReceiver.Services
     /// </summary>
     public class AudioPlayback : IDisposable
     {
+        // Hard cap on BufferedWaveProvider fill level.
+        // Frames arriving when the buffer already holds this much audio are dropped.
+        // One dropped frame (~20ms) every several seconds is inaudible; a growing
+        // buffer caused by Android/Windows clock drift is very noticeable.
+        private const int MaxBufferMs = 80;
+
         private IWavePlayer? _waveOut;
         private BufferedWaveProvider? _bufferProvider;
         private readonly WaveFormat _waveFormat;
         private readonly int _deviceNumber;
+
+        private int _droppedFrames = 0;
 
         public bool IsPlaying => _waveOut?.PlaybackState == PlaybackState.Playing;
         public TimeSpan BufferedDuration => _bufferProvider?.BufferedDuration ?? TimeSpan.Zero;
@@ -48,7 +56,7 @@ namespace MicStreamReceiver.Services
                 _bufferProvider = new BufferedWaveProvider(_waveFormat)
                 {
                     BufferDuration = TimeSpan.FromSeconds(2),
-                    DiscardOnBufferOverflow = true
+                    DiscardOnBufferOverflow = false  // We cap before adding; overflow should never happen
                 };
 
                 // Create wave output device
@@ -56,7 +64,7 @@ namespace MicStreamReceiver.Services
                 _waveOut = new WaveOutEvent
                 {
                     DeviceNumber = _deviceNumber,
-                    DesiredLatency = 100 // 100ms desired latency
+                    DesiredLatency = 40
                 };
 
                 _waveOut.Init(_bufferProvider);
@@ -115,6 +123,16 @@ namespace MicStreamReceiver.Services
 
             try
             {
+                // Drop the frame if the buffer is already deep enough.
+                // This prevents clock-drift latency from accumulating indefinitely
+                // and stops DiscardOnBufferOverflow from silently cutting audio mid-frame
+                // (which causes crackling/noise).
+                if (_bufferProvider.BufferedDuration.TotalMilliseconds > MaxBufferMs)
+                {
+                    _droppedFrames++;
+                    return;
+                }
+
                 _bufferProvider.AddSamples(audioData, 0, audioData.Length);
 
                 // Auto-start playback if stopped
@@ -154,7 +172,7 @@ namespace MicStreamReceiver.Services
             var bufferLength = _bufferProvider.BufferLength;
             var bufferedBytes = _bufferProvider.BufferedBytes;
 
-            return $"Buffer: {bufferedMs:F0}ms ({bufferedBytes}/{bufferLength} bytes)";
+            return $"Buffer: {bufferedMs:F0}ms ({bufferedBytes}/{bufferLength} bytes) | Dropped: {_droppedFrames}";
         }
 
         public void Dispose()
