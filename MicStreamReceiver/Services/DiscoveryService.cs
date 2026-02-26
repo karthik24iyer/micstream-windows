@@ -54,8 +54,15 @@ namespace MicStreamReceiver.Services
             OnStatusChanged($"    name={_instanceName}");
             OnStatusChanged("    capabilities=opus,rnnoise");
 
-            // Start real mDNS responder
-            _mdns = new MulticastService();
+            // Start real mDNS responder, excluding USB tethering (RNDIS) adapters.
+            // When the Android phone is plugged in via USB for sideloading, Windows
+            // gains a 192.168.143.x tethering interface. Without this filter,
+            // Makaretu.Dns advertises on ALL interfaces and Android's NSD picks up
+            // the tethering IP instead of the WiFi IP, making the connection fail.
+            _mdns = new MulticastService(all => all.Where(ni =>
+                !ni.Description.Contains("Remote NDIS", StringComparison.OrdinalIgnoreCase) &&
+                !ni.Description.Contains("RNDIS", StringComparison.OrdinalIgnoreCase) &&
+                !ni.Description.Contains("Android USB", StringComparison.OrdinalIgnoreCase)));
             _sd = new ServiceDiscovery(_mdns);
             _sd.Advertise(profile);
             _mdns.Start();
